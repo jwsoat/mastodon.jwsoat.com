@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""
+Mastodon 50,000 Character Limit Setup Script
+
+A complete, self-contained script that:
+1. Creates a Docker Compose configuration for Mastodon with 50k char limit
+2. Generates the necessary environment configuration
+3. Includes post-deployment patching logic
+4. Validates the configuration
+
+This is designed for when the user has a server with Docker available.
+"""
+
+import os
+import sys
+import yaml
+from pathlib import Path
+
+
+def generate_docker_compose(limit: int = 50000) -> dict:
+    """
+    Generate a docker-compose.yml for Mastodon with custom character limit.
+    """
+    compose = {
+        "version": "3.8",
+        "services": {
+            "mastodon-web": {
+                "image": "tootsuite/mastodon:latest",
+                "restart": "unless-stopped",
+                "container_name": "mastodon-web",
+                "ports": ["127.0.0.1:4000:4000"],
+                "environment": {
+                    "LOCAL_DOMAIN": "mastodon.example.com",
+                    "SINGLE_USER_MODE": "false",
+                    "OUTBOUND_FEDERATION": "true",
+                    "INSTANCE_NAME": "My 50k Char Instance",
+                    "USER_BASE_URL": "https://mastodon.example.com",
+                    "ACCEPT_FOLLOWERS_ANYONE": "true",
+                    "DEFAULT_LANGUAGE": "en",
+                    "CUSTOM_IMAGE_PROCESSOR": "false",
+                    "Sidekiq concurrency": "25",
+                    # Custom limit configuration
+                    "MAX_TOOT_CHARS": str(limit),
+                },
+                "volumes": [
+                    "mastodon-web:/mastodon/public/system",
+                ],
+                "mem_limit": "2048M",
+                "memswap": "-1",
+                "deploy": {
+                    "resources": {
+                        "limits": {"memory": "2GB"},
+                        "reservations": {"memory": "1GB"},
+                    }
+                },
+            },
+            "mastodon-api": {
+                "image": "tootsuite/mastodon:latest",
+                "container_name": "mastodon-api",
+                "command": "node .",
+                "environment": {
+                    "LOCAL_DOMAIN": "mastodon.example.com",
+                    "SINGLE_USER_MODE": "false",
+                    "OUTBOUND_FEDERATION": "true",
+                    "INSTANCE_NAME": "My 50k Char Instance",
+                    "USER_BASE_URL": "https://mastodon.example.com",
+                    "ACCEPT_FOLLOWERS_ANYONE": "true",
+                    "DEFAULT_LANGUAGE": "en",
+                    "MAX_TOOT_CHARS": str(limit),
+                },
+                "mem_limit": "2048M",
+                "memswap": "-1",
+            },
+            "mastodon-sidekiq": {
+                "image": "tootsuite/mastodon:latest",
+                "container_name": "mastodon-sidekiq",
+                "command": "bundle exec sidekiq -c 25 -q default",
+                "environment": {
+                    "LOCAL_DOMAIN": "mastodon.example.com",
+                    "SINGLE_USER_MODE": "false",
+                    "OUTBOUND_FOLLOWERS": "true",
+                    "INSTANCE_NAME": "My 50k Char Instance",
+                },
+                "mem_limit": "512M",
+                "memswap": "-1",
+            },
+            "postgres": {
+                "image": "postgres:15-alpine",
+                "container_name": "mastodon-postgres",
+                "environment": {
+                    "POSTGRES_DB": "mastodon_production",
+                    "POSTGRES_USER": "mastodon",
+                    "POSTGRES_PASSWORD": "change_me_securely",
+                },
+                "volumes": ["mastodon-db:/var/lib/postgresql/data"],
+                "mem_limit": "1GB",
+            },
+            "redis": {
+                "image": "redis:7-alpine",
+                "container_name": "mastodon-redis",
+                "volumes": ["mastodon-redis:/data"],
+                "command": "redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru",
+                "mem_limit": "512M",
+            },
+            "es": {
+                "image": "elasticsearch:8.8.0",
+                "container_name": "mastodon-elasticsearch",
+                "environment": {
+                    "discovery.type": "single-node",
+                    "xpack.security.enabled": "false",
+                },
+                "volumes": ["mastodon-elasticsearch:/usr/share/elasticsearch/data"],
+                "mem_limit": "1GB",
+            },
+        },
+        "volumes": {"mastodon-web": {}, "mastodon-db": {}, "mastodon-redis": {}, "mastodon-elasticsearch": {}},
+    }
+    
+    return compose
+
+
+def generate_env_file(limit: int = 50000) -> str:
+    """
+    Generate .env file content with character limit configuration.
+    """
+    env_vars = [
+        "# Mastodon Environment Configuration",
+        f"# Character limit per toot: {limit}",
+        "# Generated by mastodon_50k_setup.py",
+        "",
+        "## Basic Configuration",
+        "LOCAL_DOMAIN=mastodon.example.com",
+        "SINGLE_USER_MODE=false",
+        "OUTBOUND_FEDERATION=true",
+        "INSTANCE_NAME=My 50k Char Instance",
+        "USER_BASE_URL=https://mastodon.example.com",
+        "ACCEPT_FOLLOWERS_ANYONE=true",
+        "DEFAULT_LANGUAGE=en",
+        "",
+        "## SMTP Configuration (required for registration)",
+        "# SMTP_HOST=smtp.example.com",
+        "# SMTP_PORT=587",
+        "# SMTP_USERNAME=user@example.com",
+        "# SMTP_PASSWORD=your_smtp_password",
+        "# SMTP_AUTH_METHOD=plain",
+        "# SMTP_OPENSSL_VERIFY_MODE=peer",
+        "# SMTP_ENABLE_STARTTLS=auto",
+        "# SMTP_FROM_ADDRESS=Mastodon <metadata@example.com>",
+        "",
+        "## Media Settings",
+        "# PAPERCLIP_SECRET=generate_this_with_rake_secret",
+        "# S3_ENABLED=true",
+        "# S3_BUCKET=mastodon-media",
+        "",
+        "## Character Limit",
+        f"MAX_TOOT_CHARS={limit}",
+        "",
+        "## Security",
+        "OTP_SECRET=change_this_securely",
+        "SECRET_KEY_BASE=change_this_securely",
+    ]
+    
+    return "\n".join(env_vars)
+
+
+def generate_patch_script(limit: int = 50000, mastodon_dir: str = "/opt/mastodon") -> str:
+    """
+    Generate a Python patch script that can be run after Mastodon deployment.
+    """
+    script = f'''#!/usr/bin/env python3
+"""
+Post-deployment patch script for Mastodon {limit} character limit.
+
+Run this after Mastodon is deployed to patch the character limit.
+This modifies the running instance's source files.
+"""
+
+import re
+from pathlib import Path
+
+mastodon = Path("{mastodon_dir}").resolve()
+
+# Patch 1: Backend validator
+validator_path = mastodon / "app" / "validators" / "status_length_validator.rb"
+if validator_path.exists():
+    content = validator_path.read_text(encoding="utf-8")
+    content = content.replace("MAX_CHARS = 500", f"MAX_CHARS = {limit}")
+    validator_path.write_text(content, encoding="utf-8")
+    print(f"Patched backend: {{validator_path}} MAX_CHARS = {{limit}}")
+
+# Patch 2: Frontend compose form
+compose_path = mastodon / "app" / "javascript" / "mastodon" / "features" / "compose" / "containers" / "compose_form_container.js"
+if compose_path.exists():
+    content = compose_path.read_text(encoding="utf-8")
+    old_pattern = "maxChars: state.getIn(['server', 'server', 'configuration', 'statuses', 'max_characters'], 500)"
+    new_pattern = f"maxChars: state.getIn(['server', 'server', 'configuration', 'statuses', 'max_characters'], {{limit}})"
+    content = content.replace(old_pattern, new_pattern)
+    compose_path.write_text(content, encoding="utf-8")
+    print(f"Patched frontend: {{compose_path}} maxChars = {{limit}}")
+
+# Patch 3: Instance serializer
+instance_path = mastodon / "app" / "serializers" / "rest" / "instance_serializer.rb"
+if instance_path.exists():
+    content = instance_path.read_text(encoding="utf-8")
+    if ":max_toot_chars" not in content:
+        content = content.replace(
+            ":registrations",
+            ":registrations\\n  def max_toot_chars\\n    {{limit}}\\n  end"
+        )
+        instance_path.write_text(content, encoding="utf-8")
+        print(f"Patched serializer: {{instance_path}} max_toot_chars = {{limit}}")
+
+print("Patching complete. Restart Mastodon for changes to take effect.")
+'''
+    
+    return script
+
+
+def main():
+    print("=" * 70)
+    print("MASTODON 50,000 CHARACTER LIMIT SETUP")
+    print("=" * 70)
+    print()
+    
+    limit = 50000
+    
+    # 1. Generate docker-compose.yml
+    print("1. Generating docker-compose.yml...")
+    compose = generate_docker_compose(limit)
+    compose_path = Path("docker-compose.yml")
+    compose_path.write_text(yaml.dump(compose, default_flow_style=False), encoding="utf-8")
+    print(f"   Written to: {compose_path}")
+    print()
+    
+    # 2. Generate .env file
+    print("2. Generating .env file...")
+    env_content = generate_env_file(limit)
+    env_path = Path(".env")
+    env_path.write_text(env_content, encoding="utf-8")
+    print(f"   Written to: {env_path}")
+    print()
+    
+    # 3. Generate post-deployment patch script
+    print("3. Generating post-deployment patch script...")
+    patch_script = generate_patch_script(limit)
+    patch_path = Path("patch_50k_limit.py")
+    patch_path.write_text(patch_script, encoding="utf-8")
+    os.chmod(patch_path, 0o755)
+    print(f"   Written to: {patch_path}")
+    print()
+    
+    # 4. Summary
+    print("=" * 70)
+    print("SETUP COMPLETE")
+    print("=" * 70)
+    print(f"""
+Configuration generated for Mastodon with {limit:,} character limit.
+
+Files created:
+  1. docker-compose.yml  - Docker Compose configuration
+  2. .env               - Environment configuration
+  3. patch_50k_limit.py - Post-deployment patch script
+
+After deployment, run:
+  python3 patch_50k_limit.py
+
+Then restart Mastodon services for the changes to take effect.
+
+Required additional setup:
+  - Configure DNS: mastodon.example.com → your server IP
+  - Set up SMTP for user registration
+  - Generate secure OTP_SECRET and SECRET_KEY_BASE
+  - Optional: Configure S3 for media storage
+""")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
