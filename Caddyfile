@@ -1,0 +1,8 @@
+{$DOMAIN} {
+    encode gzip zstd
+
+    @streaming path /api/v1/streaming/*
+    reverse_proxy @streaming streaming:4000
+
+    reverse_proxy web:3000
+}

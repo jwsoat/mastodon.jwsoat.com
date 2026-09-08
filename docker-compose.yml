@@ -1,0 +1,116 @@
+services:
+  db:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    shm_size: 256mb
+    environment:
+      POSTGRES_USER: ${DB_USER:-mastodon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-mastodon_production}
+    volumes:
+      - ./postgres14:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-mastodon} -d ${DB_NAME:-mastodon_production}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ./redis:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      args:
+        MASTODON_VERSION: ${MASTODON_VERSION:-4.5.2}
+    image: mastodon-jwsoat:50000
+    restart: unless-stopped
+    env_file: .env.production
+    command: bundle exec puma -C config/puma.rb
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./public/system:/mastodon/public/system
+    networks: [public, internal]
+    expose: ["3000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --noproxy localhost http://localhost:3000/health | grep -q OK"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  streaming:
+    image: ghcr.io/mastodon/mastodon-streaming:v${MASTODON_VERSION:-4.5.2}
+    restart: unless-stopped
+    env_file: .env.production
+    command: node ./streaming/index.js
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [public, internal]
+    expose: ["4000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/api/v1/streaming/health | grep -q OK"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  sidekiq:
+    build:
+      context: .
+      args:
+        MASTODON_VERSION: ${MASTODON_VERSION:-4.5.2}
+    image: mastodon-jwsoat:50000
+    restart: unless-stopped
+    env_file: .env.production
+    command: bundle exec sidekiq
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./public/system:/mastodon/public/system
+    networks: [internal]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${LOCAL_DOMAIN:-mastodon.jwsoat.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      streaming:
+        condition: service_healthy
+    networks: [public]
+
+networks:
+  public:
+  internal:
+    internal: true

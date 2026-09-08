@@ -1,0 +1,9 @@
+.env.production
+postgres14/
+redis/
+public/system/
+caddy-data/
+caddy-config/
+.git/
+*.pyc
+__pycache__/
