@@ -39,9 +39,16 @@ docker compose build web sidekiq
 
 docker compose run --rm web bundle exec rails secret
 docker compose run --rm web bundle exec rails mastodon:webpush:generate_vapid_key
+docker compose run --rm web bundle exec rails db:encryption:init
 ```
 
-Put the generated values into `.env.production` as `SECRET_KEY_BASE`, `VAPID_PRIVATE_KEY`, and `VAPID_PUBLIC_KEY`. Generate `OTP_SECRET` with another `rails secret` command.
+`db:encryption:init` prints these three required values:
+
+- `ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY`
+- `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT`
+- `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY`
+
+Put all generated values into `.env.production`. Generate `OTP_SECRET` with another `rails secret` command. Do not regenerate Active Record encryption values after the instance has stored encrypted data.
 
 Create the database and administrator account:
 
